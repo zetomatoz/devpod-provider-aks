@@ -3,16 +3,41 @@
 This note explains the byte paths used when DevPod connects VS Code to a
 workspace pod through the Kubernetes provider.
 
+## SSH Semantics, HTTPS/WebSocket Transport
+
+The important point for enterprise review is that DevPod can preserve the SSH
+protocol that IDEs already understand without exposing SSH as a network port.
+
+VS Code, Zed, and other IDEs can keep speaking SSH to the local SSH client. The
+local SSH client uses `ProxyCommand` to hand those SSH bytes to DevPod. DevPod
+then asks the Kubernetes provider to run `kubectl exec`, and `kubectl` carries
+the stream to the Kubernetes API server over HTTPS. That HTTPS connection is
+upgraded to a long-lived bidirectional stream, usually WebSocket in modern
+Kubernetes clients. The SSH bytes transit inside that Kubernetes exec stream.
+
+That gives the workflow two useful properties at the same time:
+
+- IDE pluggability: the editor still uses the broadly supported SSH protocol.
+- Enterprise-friendly transport: the underlying network path is Kubernetes API
+  HTTPS/WebSocket traffic, not an inbound SSH listener on port 22.
+
+In practical terms, there is normally no pod SSH port to publish, no node SSH
+port to route to the workspace, and no workspace-specific firewall hole for SSH.
+The network and security control point is Kubernetes API access, especially the
+ability to create `pods/exec` streams in the workspace namespace.
+
 ## Short Version
 
 DevPod does not normally expose pod port 22. Instead, SSH bytes are carried
-through a Kubernetes `exec` stream.
+through a Kubernetes `exec` stream. The `kubectl exec` transport is an HTTPS
+connection to the Kubernetes API server that is upgraded to a bidirectional
+stream, with the SSH protocol bytes flowing inside that stream.
 
 ```text
 VS Code
   -> local ssh client
   -> local devpod CLI
-  -> kubectl exec stream
+  -> kubectl exec stream over HTTPS/WebSocket
   -> injected devpod helper in the pod
   -> SSH server over stdio
 ```
@@ -110,9 +135,19 @@ What is happening:
 1. DevPod writes an SSH config entry for a host such as `workspace.devpod`.
 2. That SSH config uses `ProxyCommand`.
 3. `ProxyCommand` launches local `devpod ssh --stdio`.
-4. Local DevPod opens another Kubernetes exec stream to the pod.
+4. Local DevPod opens another Kubernetes exec stream to the pod through
+   `kubectl`.
 5. The injected helper starts another stdio SSH server process.
 6. VS Code Remote SSH installs or starts the VS Code Server over that SSH path.
+
+From the IDE's point of view, this is still SSH. That matters because SSH is the
+default remote-development protocol for many editors and tools, so DevPod can
+plug into existing IDE behavior instead of requiring a custom editor transport.
+
+From the enterprise network's point of view, this is not an inbound SSH
+connection to a workspace. The outer connection is the normal Kubernetes API
+path: HTTPS to the API server, upgraded to WebSocket or an older streaming
+protocol for `exec`.
 
 ## 4. Layer View
 
@@ -121,8 +156,8 @@ VS Code Remote SSH traffic
   inside SSH protocol
     inside local DevPod stdio bridge
       inside Kubernetes exec stdin/stdout/stderr stream
-        inside WebSocket or older SPDY
-          inside TLS
+        inside WebSocket or older SPDY upgrade
+          inside TLS/HTTPS
             inside TCP/IP
 ```
 
@@ -131,14 +166,16 @@ Definitions:
 - SSH: the remote-login protocol used by VS Code Remote SSH.
 - ProxyCommand: an SSH feature that sends SSH bytes through another local command.
 - Kubernetes exec: the Kubernetes API operation that runs a process inside a pod.
-- WebSocket: a long-lived bidirectional stream, used by modern Kubernetes exec.
+- WebSocket: the long-lived bidirectional stream commonly used by modern
+  Kubernetes exec after the HTTPS connection is upgraded.
 - TLS: the encryption layer used by HTTPS and secure WebSockets.
 - stdio: standard input/output pipes attached to a process.
 
 ## Security Summary
 
-The default concern is not usually an exposed pod port 22. The more important
-control point is Kubernetes API access.
+The default concern is not usually an exposed pod port 22, because this flow
+does not require publishing SSH on the workspace pod or opening an SSH firewall
+path to it. The more important control point is Kubernetes API access.
 
 Users or identities that can create `pods/exec` in the workspace namespace can
 run commands inside workspace pods. Users or identities that can create

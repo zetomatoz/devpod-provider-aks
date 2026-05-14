@@ -16,6 +16,23 @@ Azure Kubernetes Service by using DevPod's built-in `kubernetes` provider.
 - `samples/dotnet-hello-world/`: richer sample app for follow-up validation
 - `docs/`: architecture notes, contributor guidance, runbooks, and roadmap
 
+## SSH Over Kubernetes HTTPS/WebSocket
+
+DevPod can let IDEs such as VS Code use the standard SSH protocol without
+requiring workspace pods to expose SSH ports. The IDE speaks SSH to the local
+SSH client, the SSH client uses DevPod as a `ProxyCommand`, and DevPod carries
+the SSH bytes through `kubectl exec`.
+
+The important enterprise networking detail is that `kubectl exec` talks to the
+Kubernetes API server over HTTPS and upgrades that connection to a bidirectional
+stream, usually WebSocket. In other words: SSH remains the IDE-facing protocol,
+while the underlying transport is Kubernetes API HTTPS/WebSocket traffic. There
+is normally no need to open port 22 to workspaces or manage workspace-specific
+SSH firewall rules.
+
+See [docs/devpod-ssh-byte-paths.md](docs/devpod-ssh-byte-paths.md) for the byte
+path diagrams and security notes.
+
 ## Quick Start
 
 Set the required Azure variables:
